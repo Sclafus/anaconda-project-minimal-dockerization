@@ -1,51 +1,64 @@
-# Use a lightweight base image
-FROM debian:buster-slim
+# Start from a minimal base image
+FROM debian:buster-slim AS build
 
-# Set environment variables
-ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+# Set the working directory
+WORKDIR /app
 
-# Install necessary system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    curl \
+# Install dependencies for downloading and installing Miniconda
+RUN apt-get update && apt-get install -y \
+    wget \
     bzip2 \
     ca-certificates \
-    sudo \
-    git \
-    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Miniconda3
-ENV MINICONDA_VERSION=latest
-ENV MINICONDA_PATH=/opt/miniconda
-RUN curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-${MINICONDA_VERSION}-Linux-x86_64.sh -o miniconda.sh && \
-    bash miniconda.sh -b -p $MINICONDA_PATH && \
-    rm miniconda.sh
+# Download and install Miniconda (minimized)
+RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p /miniconda && \
+    rm /tmp/miniconda.sh
 
-# Add conda binary to PATH
-ENV PATH=$MINICONDA_PATH/bin:$PATH
+# Add conda to PATH
+ENV PATH=/miniconda/bin:$PATH
 
-# Install anaconda-project in the base (root) conda environment
+# Install anaconda-project in the base environment
 RUN conda install -y anaconda-project && \
-    conda clean -afy
+    conda clean -afy  # Clean up conda caches
 
-# Copy your project files into the container
-WORKDIR /app
-COPY . /app
+# Copy project files (assuming anaconda-project.yml is in the source code)
+COPY . /app/project
 
-# Prepare environment (accepting an optional environment name)
-ARG ENV_SPEC=default
-RUN anaconda-project prepare --env-spec $ENV_SPEC
+# Set up environment based on anaconda-project
+ARG ENV_SPEC=""
+RUN cd /app/project && \
+    if [ -n "$ENV_SPEC" ]; then \
+        anaconda-project prepare --env-spec $ENV_SPEC; \
+    else \
+        anaconda-project prepare; \
+    fi
 
-RUN mv $MINICONDA_PATH/envs/$ENV_SPEC /opt/conda_env
-RUN rm -rf $MINICONDA_PATH
-ENV PATH=/opt/conda_env/bin:$PATH
+# Move the prepared environment to /app/env
+RUN mv /app/project/envs/default /app/env
 
-# Define the command to be run in the container
-# The required command will be passed as an argument
-# Set the ENTRYPOINT to accept the runtime command
-ENTRYPOINT ["anaconda-project", "run"]
+# Remove miniconda to reduce image size
+RUN rm -rf /miniconda
 
-# Define CMD as an empty array so users are required to provide the command at runtime
-CMD []
+# Remove any cached files, temporary or unnecessary files
+RUN apt-get remove -y wget bzip2 ca-certificates && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
+# Final stage: runtime image with only necessary files
+FROM debian:buster-slim
+
+# Set the working directory
+WORKDIR /app/project
+
+# Copy the prepared environment and project files from the build stage
+COPY --from=build /app/env /app/env
+COPY --from=build /app/project /app/project
+
+ENV PATH=$PATH:/app/env/bin
+ENV CONDA_PREFIX=/app/env
+RUN ln -s /app/env /app/project/envs/default
+# Activate the environment and set the entrypoint
+ENTRYPOINT ["/bin/bash", "-c", "anaconda-project run \"$@\""]
+
+# CMD is supplied at runtime using docker run
 

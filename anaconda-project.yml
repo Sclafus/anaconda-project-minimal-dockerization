@@ -6,6 +6,7 @@ packages:
   - fastapi
   - uvicorn
   - anaconda-project
+  - conda
 channels: 
   - main
 platforms:
